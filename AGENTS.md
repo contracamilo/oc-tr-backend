@@ -131,14 +131,14 @@ Resumen del [`SPEC.md` §6](./SPEC.md). Los issues viven en GitHub con label `it
 | Iter | Estado | Issues | Entregable |
 |---|---|---|---|
 | **1** | ✅ hecho | — | Scaffold, `requirements.txt`, `init_db`, `GET /api/health` |
-| **2** | 🟡 parcial | [#1](https://github.com/contracamilo/oc-tr-backend/issues/1), [#2](https://github.com/contracamilo/oc-tr-backend/issues/2) (Tasks), [#10](https://github.com/contracamilo/oc-tr-backend/issues/10) ✅ (Users) | CRUD de Users + Tasks. Ver nota sobre #1/#10 abajo. |
+| **2** | 🟡 parcial | [#1](https://github.com/contracamilo/oc-tr-backend/issues/1) (Users), [#2](https://github.com/contracamilo/oc-tr-backend/issues/2) (Tasks) | CRUD de Users + Tasks |
 | **3** | ⬜ | [#3](https://github.com/contracamilo/oc-tr-backend/issues/3) | Ruleta: `services/roulette.assign_tasks()` + `POST /api/roulette` |
 | **4** | ⬜ | [#4](https://github.com/contracamilo/oc-tr-backend/issues/4) | Checklist semanal (CRUD + `?week_start=`) |
 | **5** | ⬜ | [#5](https://github.com/contracamilo/oc-tr-backend/issues/5) | Lista de mercado (CRUD + filtros) |
 | **6** | ⬜ | [#6](https://github.com/contracamilo/oc-tr-backend/issues/6) (Budget CRUD), [#7](https://github.com/contracamilo/oc-tr-backend/issues/7) (Summary) | Presupuesto mensual + endpoint `/budget/summary` |
-| **7** | ⬜ | [#8](https://github.com/contracamilo/oc-tr-backend/issues/8) (static), [#9](https://github.com/contracamilo/oc-tr-backend/issues/9) (tests) | Montar frontend como static + pytest |
+| **7** | ⬜ | [#8](https://github.com/contracamilo/oc-tr-backend/issues/8) (static), [#9](https://github.com/contracamilo/oc-tr-backend/issues/9) (tests), [#11](https://github.com/contracamilo/oc-tr-backend/issues/11) (README) | Montar frontend como static + pytest + quickstart |
 
-> ⚠️ **Inconsistencia detectada al escribir este AGENTS.md**: el [`SPEC.md` §6](./SPEC.md) lista `iter 2 → #1 (Users), #2 (Tasks)`, pero en GitHub el **#1** tiene título "User model" pero su cuerpo describe el modelo `Task`, y el **#10** (cerrado) es el que realmente implementa `User`. La spec dice "Users (#1) ✅" pero el issue cerrado es el #10. **Pendiente de alinear**: o se renombra el #1 (corregir título a "Task") y se reabre, o se actualiza la spec para apuntar a #10. No lo arregles unilateralmente; coméntalo en el próximo PR.
+> ✅ **Resuelto**: el cuerpo de los issues se realineó con `gh issue edit --body-file`. `#1` describe User, `#2` describe Task, `#10` quedó cerrado como duplicado histórico de `#1`, y `#11` cubre el README. La spec apunta a `#1/#2` correctamente.
 
 ## 7. Decisiones arquitectónicas
 
