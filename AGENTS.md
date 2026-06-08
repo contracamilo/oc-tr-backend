@@ -91,8 +91,11 @@ oc-tr-backend/
 ├── .env.example
 ├── .gitignore
 ├── .sdd/
+│   ├── architecture.md        ← Arquitectura completa (capas, patrones, ADRs, testing)
 │   ├── api-pagination.md      ← Paginación y batch (issue #12)
-│   └── data-model.md          ← Modelo de datos y relaciones
+│   ├── api.md                 ← Contratos de todos los endpoints
+│   ├── data-model.md          ← Modelo de datos, relaciones, evaluación NoSQL
+│   └── setup.md               ← Setup local con PostgreSQL y Docker
 └── app/
     ├── __init__.py
     ├── main.py                ← create_app(), CORS, rate limiter, startup, health, exception handlers
