@@ -3,6 +3,7 @@
 > Documento de orientación para agentes IA y contribuidores humanos.
 > Repo independiente. Su gemelo de UI vive en [`oc-tr-frontend`](https://github.com/contracamilo/oc-tr-frontend).
 > La documentación de producto/arquitectura compartida está en `docs/` dentro del directorio padre `oc-tr/` (no en este repo).
+> La especificación de paginación y batch operations está en `.sdd/api-pagination.md`.
 
 ---
 
@@ -37,6 +38,8 @@ oc-tr-backend/
 ├── requirements.txt           ← deps fijadas
 ├── .env.example               ← variables documentadas (APP_ENV, DATABASE_URL, CORS_ORIGINS)
 ├── .gitignore                 ← __pycache__, .venv, .env, data/*.db
+├── .sdd/
+│   └── api-pagination.md      ← Especificación de paginación y batch (issue #12)
 └── app/
     ├── __init__.py
     ├── main.py                ← create_app(), CORS, init_db() en startup, GET /api/health
@@ -54,7 +57,8 @@ oc-tr-backend/
     │   └── roulette.py        ← POST /api/roulette (iter 3)
     └── services/
         ├── __init__.py
-        └── roulette.py        ← assign_tasks() pura, sin DB (iter 3)
+        ├── roulette.py        ← assign_tasks() pura, sin DB (iter 3)
+        └── pagination.py      ← paginate() helper (issue #12)
 ```
 
 **Archivo de DB**: `data/hogar.db`, relativo a la raíz del repo padre `oc-tr/`. Está gitignored.
@@ -119,6 +123,21 @@ Stack objetivo: `pytest` + `httpx.AsyncClient` contra `TestClient` de FastAPI, c
 
 Scopes usados: `api`, `db`, `models`, `schemas`, `tests`, `deps`. Ej: `feat(api): implement Task model and CRUD`.
 
+### Paginación (issue #12 — transversal)
+
+- Todos los GET list endpoints aceptan `limit` (default 20-50 según recurso) y `offset` (default 0).
+- Respuesta: `{"items": [...], "total": int, "limit": int, "offset": int}`.
+- Usar `services/pagination.paginate(query, limit, offset)` en cada GET list.
+- No hacer `.all()` directamente — siempre pasar por `paginate()`.
+- `limit` máximo por recurso: Tasks=100, Checklist=200, Shopping=200, Budget=100.
+
+### Batch operations (issue #12)
+
+- `POST /api/shopping/batch-purchase`: recibe `{ids: int[], purchased_by: int}`, marca en una transacción.
+- `POST /api/roulette`: recibe `{task_ids: int[], user_ids: int[], seed?: int}`, asigna en una transacción.
+- Validar que todos los IDs existan antes de aplicar cambios.
+- Toda batch operation debe ser atómica (una transacción).
+
 ### UI y copy
 
 - **No emojis en código fuente** (salvo iconos UI acordados en `frontend/`).
@@ -129,7 +148,7 @@ Scopes usados: `api`, `db`, `models`, `schemas`, `tests`, `deps`. Ej: `feat(api)
 Resumen del [`SPEC.md` §6](./SPEC.md). Los issues viven en GitHub con label `iter-N`.
 
 | Iter | Estado | Issues | Entregable |
-|---|---|---|---|
+|---|---|---|---|---|
 | **1** | ✅ hecho | — | Scaffold, `requirements.txt`, `init_db`, `GET /api/health` |
 | **2** | 🟡 parcial | [#1](https://github.com/contracamilo/oc-tr-backend/issues/1) (Users), [#2](https://github.com/contracamilo/oc-tr-backend/issues/2) (Tasks) | CRUD de Users + Tasks |
 | **3** | ⬜ | [#3](https://github.com/contracamilo/oc-tr-backend/issues/3) | Ruleta: `services/roulette.assign_tasks()` + `POST /api/roulette` |
@@ -137,10 +156,25 @@ Resumen del [`SPEC.md` §6](./SPEC.md). Los issues viven en GitHub con label `it
 | **5** | ⬜ | [#5](https://github.com/contracamilo/oc-tr-backend/issues/5) | Lista de mercado (CRUD + filtros) |
 | **6** | ⬜ | [#6](https://github.com/contracamilo/oc-tr-backend/issues/6) (Budget CRUD), [#7](https://github.com/contracamilo/oc-tr-backend/issues/7) (Summary) | Presupuesto mensual + endpoint `/budget/summary` |
 | **7** | ⬜ | [#8](https://github.com/contracamilo/oc-tr-backend/issues/8) (static), [#9](https://github.com/contracamilo/oc-tr-backend/issues/9) (tests), [#11](https://github.com/contracamilo/oc-tr-backend/issues/11) (README) | Montar frontend como static + pytest + quickstart |
+| **#12** | ⬜ | [#12](https://github.com/contracamilo/oc-tr-backend/issues/12) | Paginación transversal + batch operations |
 
 > ✅ **Resuelto**: el cuerpo de los issues se realineó con `gh issue edit --body-file`. `#1` describe User, `#2` describe Task, `#10` quedó cerrado como duplicado histórico de `#1`, y `#11` cubre el README. La spec apunta a `#1/#2` correctamente.
 
-## 7. Decisiones arquitectónicas
+## 7. Plan de implementación — Issue #12 (Paginación + Batch)
+
+| Fase | Issues | Depende de | Entregable |
+|---|---|---|---|
+| A | #12 (infra) | — | `services/pagination.py` + `PaginatedResponse[T]` en `schemas.py` |
+| B | #12 (tasks) | A | Task list con paginación |
+| C | #3, #12 (roulette) | A | Roulette endpoint + lógica `assign_tasks()` |
+| D | #4, #12 (checklist) | A | Checklist list con paginación |
+| E | #5, #12 (shopping) | A | Shopping list + `POST /batch-purchase` |
+| F | #6, #12 (budget) | A | Budget list con paginación |
+| G | #8, #9, #11 | A-F | Router registration, static files, tests, README |
+
+Cada fase puede ser implementada por un agente distinto (todas dependen de A). Ver `.sdd/api-pagination.md` para la especificación completa.
+
+## 8. Decisiones arquitectónicas
 
 - **Sync, no async** en routers: SQLAlchemy sync + SQLite + 2-5 usuarios en LAN no justifican la complejidad de async. Reversible capa a capa.
 - **SQLite** con `check_same_thread=False`: file-based, cero-config. WAL mode se puede activar con `PRAGMA` si hace falta. Migrar a Postgres = cambiar `DATABASE_URL` y revisar tipos.
@@ -151,7 +185,13 @@ Resumen del [`SPEC.md` §6](./SPEC.md). Los issues viven en GitHub con label `it
 - **`datetime.utcnow` en columnas** (no `func.now()`) para que el timestamp sea portable entre SQLite y Postgres sin sorpresas.
 - **Frontend servido desde FastAPI** (decisión de iter 7, `app.mount("/", StaticFiles(...))`). Hasta entonces, dev con servidor estático aparte.
 
-## 8. Reglas de oro
+### Para issue #12
+
+- Leer `.sdd/api-pagination.md` antes de implementar cualquier cambio de paginación o batch.
+- Todos los GET list DEBEN usar `paginate()` — no hacer `.all()` directo.
+- Todas las batch operations DEBEN ser atómicas (una transacción).
+
+## 9. Reglas de oro
 
 ### ✅ Do
 
