@@ -9,7 +9,7 @@
 
 ## 1. Project overview
 
-**Hogar** es una app web ligera para gestionar la convivencia doméstica (tareas, compras, presupuesto, asignación de responsabilidades) entre 2-5 personas. Este repo es la **API BFF** en FastAPI + PostgreSQL que sirve tanto la API REST como los estáticos del frontend SPA mobile-first.
+**Hogar** es una app web ligera para gestionar la convivencia doméstica (tareas, compras, presupuesto, asignación de responsabilidades) entre 2-5 personas. Este repo es la **API BFF** en FastAPI + PostgreSQL que sirve la API REST para el frontend SPA (Vue 3 + Vite + Pinia + TanStack Query) y en producción sirve sus estáticos compilados.
 
 > Iteración actual: **1 — Estructura y plan**. Ver [`SPEC.md`](./SPEC.md) para el plan SDD completo.
 
