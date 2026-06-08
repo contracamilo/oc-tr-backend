@@ -74,7 +74,9 @@ Listar usuarios. Sin paginación (pocos registros).
 ### `DELETE /api/users/{user_id}`
 
 **Response 204**: No content
-**Errors**: 404, 409 (tiene tareas asignadas — FK violation)
+**Errors**: 404
+
+**Behavior**: Todas las FK hacia `users.id` están definidas con `ON DELETE SET NULL` (ver `data-model.md` §2). Al borrar un usuario, sus tareas e items históricos quedan referencialmente válidos con `*_by = NULL` ("sin asignar" / "sin autor"). No produce 409 por FK violation.
 
 ---
 
@@ -85,7 +87,7 @@ Listar usuarios. Sin paginación (pocos registros).
 **Query params**: `status`, `assigned_to`, `limit` (default 20, max 100), `offset` (default 0)
 
 **Filtros**:
-- `status`: `pending` | `done` | `in_progress`
+- `status`: `pending` | `in_progress` | `done`
 - `assigned_to`: int (user_id)
 
 **Response 200**:
@@ -111,6 +113,10 @@ Listar usuarios. Sin paginación (pocos registros).
 ```
 
 ### `POST /api/tasks`
+
+**Enums**:
+- `status`: `pending` | `in_progress` | `done`
+- `frequency`: `daily` | `weekly` | `monthly` | `once`
 
 **Request**:
 ```json

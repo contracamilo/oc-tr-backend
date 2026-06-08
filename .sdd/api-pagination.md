@@ -58,24 +58,24 @@ class PaginatedResponse(BaseModel, Generic[T]):
     offset: int
 ```
 
-Uso en cada router:
+Uso en cada router (async, consistente con `architecture.md` ADR-002):
 
 ```python
 @router.get("", response_model=PaginatedResponse[TaskOut])
-def list_tasks(
+async def list_tasks(
     status: Optional[str] = None,
     assigned_to: Optional[int] = None,
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> PaginatedResponse[TaskOut]:
-    query = db.query(Task)
+    stmt = select(Task)
     if status:
-        query = query.filter(Task.status == status)
-    if assigned_to:
-        query = query.filter(Task.assigned_to == assigned_to)
-    query = query.order_by(Task.status, Task.due_date, Task.id)
-    items, total = paginate(query, limit, offset)
+        stmt = stmt.where(Task.status == status)
+    if assigned_to is not None:
+        stmt = stmt.where(Task.assigned_to == assigned_to)
+    stmt = stmt.order_by(Task.status, Task.due_date.nulls_last(), Task.id)
+    items, total = await paginate(db, stmt, limit, offset)
     return PaginatedResponse(items=items, total=total, limit=limit, offset=offset)
 ```
 
@@ -83,11 +83,19 @@ def list_tasks(
 
 ```python
 # app/services/pagination.py
-from sqlalchemy.orm import Query
+from sqlalchemy import Select, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-def paginate(query: Query, limit: int, offset: int) -> tuple[list, int]:
-    total = query.count()
-    items = query.offset(offset).limit(limit).all()
+async def paginate(
+    db: AsyncSession,
+    stmt: Select,
+    limit: int,
+    offset: int,
+) -> tuple[list, int]:
+    count_stmt = select(func.count()).select_from(stmt.subquery())
+    total = (await db.execute(count_stmt)).scalar_one()
+    result = await db.execute(stmt.limit(limit).offset(offset))
+    items = list(result.scalars().all())
     return items, total
 ```
 

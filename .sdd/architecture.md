@@ -24,7 +24,7 @@
 │  │  • Rate Limiting (slowapi)                        ││             │
 │  │  • Global Exception Handlers                      ││             │
 │  │  • Structured Logging (structlog)                 ││             │
-│  │  • Health Checks (/health, /ready, /live)         ││             │
+│  │  • Health Checks (/api/health, .../ready, .../live) ││           │
 │  │  • CORS                                           ││             │
 │  └───────────────────────────────────────────────────┘│             │
 └───────────────────────────────────────────────────────┼─────────────┘
@@ -151,7 +151,7 @@ class TaskRepository(BaseRepository[Task]):
 - **Rate Limiting**: slowapi middleware, configurable por ruta
 - **Exception Handlers**: `app/errors.py` — handlers globales registrados en `create_app()`
 - **Logging**: structlog middleware que loggea cada request
-- **Health Checks**: endpoints separados de liveness/readiness
+- **Health Checks**: `/api/health` (status general + DB), `/api/health/ready` (readiness), `/api/health/live` (liveness). Ver `api.md` §1.
 - **CORS**: configuración vía `CORSMiddleware`
 
 ---
@@ -179,7 +179,7 @@ class TaskRepository(BaseRepository[Task]):
 
 | Excepción | Código HTTP | Response Body |
 |-----------|-------------|---------------|
-| `IntegrityError` (FK violada) | 409 | `{"detail": "El usuario 5 no existe", "code": "FK_VIOLATION"}` |
+| `IntegrityError` (FK violada en POST/PATCH) | 409 | `{"detail": "El usuario 5 no existe", "code": "FK_VIOLATION"}` |
 | `IntegrityError` (unique violation) | 409 | `{"detail": "El nombre 'Juan' ya existe", "code": "UNIQUE_VIOLATION"}` |
 | `NoResultFound` | 404 | `{"detail": "Tarea no encontrada", "code": "NOT_FOUND"}` |
 | `RequestValidationError` (Pydantic) | 422 | `{"detail": "month debe tener formato YYYY-MM", "code": "VALIDATION_ERROR"}` |
@@ -341,6 +341,13 @@ async def test_list_tasks_paginated(postgres_container, app):
 - **Decisión**: Usar `testcontainers-postgres` para tests de integración.
 - **Consecuencias**: Tests más lentos (requieren Docker), pero más fiables.
 - **Alternativas**: SQLite en memoria (rápido pero inexacto), mocking (frágil).
+
+### ADR-007: ON DELETE SET NULL en FK hacia User
+
+- **Contexto**: Cuando se elimina un conviviente, debe decidirse qué pasa con sus tareas asignadas, items que añadió/completó y movimientos de presupuesto. Bloquear el borrado (RESTRICT) crea fricción ("primero reasigna sus tareas"); borrar en cascada destruye históricos útiles.
+- **Decisión**: Todas las FK hacia `users.id` (`tasks.assigned_to`, `checklist_items.completed_by`, `shopping_items.added_by`, `shopping_items.purchased_by`, `budget_items.user_id`) usan `ON DELETE SET NULL`.
+- **Consecuencias**: `DELETE /api/users/{id}` siempre devuelve 204. Las tareas asignadas al usuario eliminado quedan "sin asignar" y deben mostrarse así en el frontend. Los históricos de checklist/shopping/budget mantienen su integridad referencial pero pierden el "por quién" (mostrar como "—").
+- **Alternativas**: RESTRICT (más seguro pero más fricción), CASCADE (destruye históricos), aplicación manual (más código, menos atómico).
 
 ---
 

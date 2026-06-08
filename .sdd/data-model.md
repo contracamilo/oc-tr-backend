@@ -94,7 +94,7 @@
 
 ### Resumen de tablas
 
-| Tabla | Columnas aprox. | FK | Crecimiento esperado |
+| Tabla | Columnas aprox. | FK (todas → User, ON DELETE SET NULL) | Crecimiento esperado |
 |-------|-----------------|----|---------------------|
 | User | 5 | 0 | 2-10 por hogar (estable) |
 | Task | 9 | 1 (assigned_to) | ~50 activas + históricas |
@@ -122,7 +122,32 @@
 | Montos | `NUMERIC(10,2)` (estimated_price, amount) |
 | Mes/año | `VARCHAR(7)` con CHECK (formato YYYY-MM) |
 | Enum (Task.status) | `VARCHAR(20)` con CHECK |
+| Enum (Task.frequency) | `VARCHAR(20)` con CHECK |
 | Enum (Budget.type) | `VARCHAR(10)` con CHECK |
+
+### Valores enumerados (CHECK constraints)
+
+| Columna | Valores permitidos |
+|---------|--------------------|
+| `Task.status` | `pending` \| `in_progress` \| `done` |
+| `Task.frequency` | `daily` \| `weekly` \| `monthly` \| `once` |
+| `BudgetItem.type` | `income` \| `expense` |
+
+Cada uno se implementa con `CHECK (col IN (...))` a nivel de tabla. Pydantic los valida en el request body con `Literal[...]` o `Enum`.
+
+### Foreign Keys y política ON DELETE
+
+Política unificada: **todas las FK que apuntan a `users.id` usan `ON DELETE SET NULL`**. Eliminar un usuario no borra históricos; solo desreferencia.
+
+| FK | Nullable | ON DELETE | Razón |
+|----|----------|-----------|-------|
+| `tasks.assigned_to → users.id` | ✅ | SET NULL | Tareas sin asignar quedan visibles para reasignar |
+| `checklist_items.completed_by → users.id` | ✅ | SET NULL | Histórico de completados se mantiene |
+| `shopping_items.added_by → users.id` | ✅ | SET NULL | Históricos de compra se mantienen |
+| `shopping_items.purchased_by → users.id` | ✅ | SET NULL | Histórico se mantiene |
+| `budget_items.user_id → users.id` | ✅ | SET NULL | Movimientos sobreviven al borrado del usuario |
+
+Implicación: `DELETE /api/users/{id}` siempre devuelve **204** (no hay 409 por FK violation). El frontend muestra "Usuario eliminado; sus tareas pasaron a 'sin asignar'".
 
 ---
 
