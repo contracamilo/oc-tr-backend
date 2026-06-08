@@ -3,115 +3,198 @@
 > Documento de orientación para agentes IA y contribuidores humanos.
 > Repo independiente. Su gemelo de UI vive en [`oc-tr-frontend`](https://github.com/contracamilo/oc-tr-frontend).
 > La documentación de producto/arquitectura compartida está en `docs/` dentro del directorio padre `oc-tr/` (no en este repo).
-> La especificación de paginación y batch operations está en `.sdd/api-pagination.md`.
+> La especificación técnica detallada está en `.sdd/`.
 
 ---
 
 ## 1. Project overview
 
-**Hogar** es una app web ligera para gestionar la convivencia doméstica (tareas, compras, presupuesto, asignación de responsabilidades) entre 2-5 personas que se conocen y comparten red. Este repo es la **API REST** en FastAPI + SQLAlchemy + SQLite, sin autenticación, pensada para correr en una Raspberry Pi o un portátil en LAN.
+**Hogar** es una app web ligera para gestionar la convivencia doméstica (tareas, compras, presupuesto, asignación de responsabilidades) entre 2-5 personas. Este repo es la **API BFF** en FastAPI + PostgreSQL que sirve tanto la API REST como los estáticos del frontend SPA mobile-first.
 
-> Iteración actual: **1 — Estructura y plan**. Ver [`SPEC.md`](./SPEC.md) para el plan SDD completo y la spec-driven development por iteraciones.
+> Iteración actual: **1 — Estructura y plan**. Ver [`SPEC.md`](./SPEC.md) para el plan SDD completo.
 
 ## 2. Stack
 
-| Capa | Tecnología | Versión pineada | Por qué |
+| Capa | Tecnología | Versión | Por qué |
 |---|---|---|---|
 | Lenguaje | Python | 3.11+ | Pedido por el usuario |
-| Framework | FastAPI | `0.115.0` | Async-ready, validación Pydantic integrada, docs auto en `/docs` |
-| ORM | SQLAlchemy | `2.0.35` (sync) | Maduro, simple, suficiente para SQLite |
-| Validación | Pydantic | `2.9.2` (v2) | Ya viene con FastAPI |
+| Framework | FastAPI | `0.115.0` | Async-ready, validación Pydantic, docs auto en `/docs` |
+| ORM | SQLAlchemy | `2.0.35` (asyncio) | Async con PostgreSQL para conexiones eficientes |
+| DB Driver | asyncpg | latest | Driver PostgreSQL asíncrono más rápido |
+| Validación | Pydantic | `2.9.2` (v2) | Viene con FastAPI |
 | Servidor | Uvicorn | `0.30.6` | Estándar para FastAPI |
 | Config | `python-dotenv` | `1.0.1` | `.env` para entorno dev |
-| DB | SQLite | — | File-based, cero-config, perfecto para uso doméstico. WAL mode activado implícitamente. |
-| Tests | `pytest` + `httpx.AsyncClient` | (iter 7) | Smoke tests por router |
+| DB | PostgreSQL | 16+ | ACID, joins, agregaciones, escalabilidad |
+| Rate limiting | slowapi | latest | Middleware de rate limiting para FastAPI |
+| Logging | structlog | latest | Logging estructurado listo para producción |
+| Tests | `pytest` + `httpx.AsyncClient` | latest | Tests asíncronos contra la BFF |
+| DB en tests | testcontainers-postgres | latest | PostgreSQL real en tests (no mock) |
 
-Para el detalle arquitectónico completo (capas, DI, patrones), ver `../oc-tr/docs/ARCHITECTURE.md` (en el repo raíz, no en este).
+**Evaluación NoSQL**: MongoDB, DynamoDB y Firestore fueron evaluados. Se descartan porque el dominio es relacional: las consultas requieren joins (task→user, shopping→user), agregaciones (budget summary con GROUP BY), y transacciones atómicas multi-fila (roulette, batch-purchase). PostgreSQL maneja esto de forma nativa, con mejor performance y sin la complejidad operativa de NoSQL para este volumen de datos (<1000 registros/hogar). Si el día de mañana se necesitara un campo flexible por entidad, PostgreSQL tiene `JSONB`.
 
-## 3. Estructura del repo
+## 3. Arquitectura
+
+**Estilo**: BFF (Backend For Frontend) hexagonal de 3 capas.
+
+```
+┌──────────────┐     ┌──────────────────────────────────────────┐     ┌──────────────┐
+│  Mobile SPA  │────▶│              BFF (FastAPI)               │────▶│  PostgreSQL  │
+│  (frontend)  │     │                                          │     │              │
+└──────────────┘     │  ┌──────────┐  ┌──────────┐  ┌────────┐ │     └──────────────┘
+                     │  │  Router  │──▶│ Service  │──▶│  Repo  │ │
+                     │  │  (HTTP)  │  │ (biz)    │  │ (DB)   │ │
+                     │  └──────────┘  └──────────┘  └────────┘ │
+                     │                                          │
+                     │  Cross-cutting:                          │
+                     │  • Rate limiting (slowapi)               │
+                     │  • Global exception handlers             │
+                     │  • Structured logging (structlog)        │
+                     │  • Health check (/api/health + DB ping)  │
+                     │  • CORS configurable                     │
+                     └──────────────────────────────────────────┘
+```
+
+**Responsabilidades de la BFF**:
+- Orquestar respuestas específicas para el frontend SPA mobile-first
+- Response shaping (devolver solo los campos que necesita la SPA)
+- Rate limiting por endpoint
+- Manejo de errores uniforme (códigos + mensajes en español)
+- Health checks con verificación de DB
+
+**Flujo típico**:
+```
+Request → Rate Limiter → Router → Service → Repository → DB
+                                      ↓
+                                Pure logic (roulette, etc.)
+```
+
+## 4. Patrones
+
+| Patrón | Problema que resuelve | Dónde se aplica |
+|--------|----------------------|-----------------|
+| **BFF** | El frontend mobile-first necesita respuestas ligeras y orquestadas, no una API genérica | `app/routers/*` — cada endpoint da forma a la respuesta para la SPA |
+| **Repository** | Aísla la lógica de persistencia; los servicios no conocen SQLAlchemy | `app/repositories/*` — toda consulta DB vive aquí, no en routers |
+| **Service Layer** | Separa lógica de negocio de HTTP y DB | `app/services/*` — `assign_tasks()`, lógica de negocio pura |
+| **Generic Paginated DTO** | Un schema paginado reusable, no N copias | `app/schemas.py` — `PaginatedResponse[T]` con Pydantic generics |
+| **Transaction per batch** | Operaciones atómicas multi-fila | Roulette y batch-purchase envueltos en una transacción |
+| **Global Exception Handler** | Errores uniformes en toda la API | `app/errors.py` — captura `IntegrityError`, `NotFound`, `ValidationError` |
+| **Middleware de rate limiting** | Protege la BFF de abusos | `app/main.py` — slowapi montado globalmente |
+
+## 5. Estructura del repo
 
 ```
 oc-tr-backend/
-├── AGENTS.md                  ← este archivo
-├── SPEC.md                    ← plan SDD (mapa de iteraciones, modelos, endpoints)
-├── README.md                  ← (no existe todavía, se crea en iter 7)
-├── requirements.txt           ← deps fijadas
-├── .env.example               ← variables documentadas (APP_ENV, DATABASE_URL, CORS_ORIGINS)
-├── .gitignore                 ← __pycache__, .venv, .env, data/*.db
+├── AGENTS.md
+├── SPEC.md
+├── README.md                  ← (iter 7)
+├── requirements.txt
+├── .env.example
+├── .gitignore
 ├── .sdd/
-│   └── api-pagination.md      ← Especificación de paginación y batch (issue #12)
+│   ├── api-pagination.md      ← Paginación y batch (issue #12)
+│   └── data-model.md          ← Modelo de datos y relaciones
 └── app/
     ├── __init__.py
-    ├── main.py                ← create_app(), CORS, init_db() en startup, GET /api/health
-    ├── config.py              ← Settings (APP_ENV, DATABASE_URL, CORS_ORIGINS) cargadas de .env
-    ├── database.py            ← engine, SessionLocal, Base, get_db (DI), init_db
-    ├── models.py              ← Base + TimestampMixin (esqueleto en iter 1; 5 modelos en iter 2+)
-    ├── schemas.py             ← Pydantic in/out (esqueleto en iter 1)
+    ├── main.py                ← create_app(), CORS, rate limiter, startup, health, exception handlers
+    ├── config.py              ← Settings desde .env (DB, CORS, rate limit, logging)
+    ├── database.py            ← async engine, async session, get_db, init_db
+    ├── models.py              ← SQLAlchemy models (User, Task, ChecklistItem, ShoppingItem, BudgetItem)
+    ├── schemas.py             ← Pydantic schemas: Create/Update/Out + PaginatedResponse[T]
+    ├── errors.py              ← Global exception handlers (IntegrityError, NotFound, ValidationError)
+    ├── logging_conf.py        ← structlog configuration
     ├── routers/
     │   ├── __init__.py
-    │   ├── users.py           ← CRUD (iter 2)
-    │   ├── tasks.py           ← CRUD + filtros (iter 2)
-    │   ├── checklist.py       ← CRUD + query por semana (iter 4)
-    │   ├── shopping.py        ← CRUD + filtros (iter 5)
-    │   ├── budget.py          ← CRUD + summary (iter 6)
-    │   └── roulette.py        ← POST /api/roulette (iter 3)
-    └── services/
+    │   ├── users.py           ← CRUD Users
+    │   ├── tasks.py           ← CRUD Tasks + paginación
+    │   ├── checklist.py       ← CRUD Checklist + paginación
+    │   ├── shopping.py        ← CRUD Shopping + paginación + batch-purchase
+    │   ├── budget.py          ← CRUD Budget + paginación + summary
+    │   └── roulette.py        ← POST /api/roulette (batch assignment)
+    ├── services/
+    │   ├── __init__.py
+    │   ├── roulette.py        ← assign_tasks() pure function
+    │   └── pagination.py      ← paginate(query, limit, offset) helper for repositories
+    └── repositories/
         ├── __init__.py
-        ├── roulette.py        ← assign_tasks() pura, sin DB (iter 3)
-        └── pagination.py      ← paginate() helper (issue #12)
+        ├── base.py            ← BaseRepository with common CRUD (get, list, create, update, delete)
+        ├── user_repo.py       ← UserRepository extends BaseRepository
+        ├── task_repo.py       ← TaskRepository (adds filtering by status, assigned_to)
+        ├── checklist_repo.py  ← ChecklistItemRepository (adds filtering by week_start)
+        ├── shopping_repo.py   ← ShoppingItemRepository (adds filtering by purchased, category)
+        └── budget_repo.py     ← BudgetItemRepository (adds summary aggregation query)
 ```
 
-**Archivo de DB**: `data/hogar.db`, relativo a la raíz del repo padre `oc-tr/`. Está gitignored.
-
-## 4. Setup y dev commands
-
-### Setup (una vez)
-
-```bash
-cd oc-tr-backend
-python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-cp .env.example .env
-```
-
-> El `.env` por defecto apunta a `sqlite:///../data/hogar.db` (la DB vive en el directorio padre `oc-tr/data/`).
-
-### Levantar el server
-
-```bash
-uvicorn app.main:app --reload --port 8000
-```
-
-- API: <http://localhost:8000/api/health>
-- Swagger: <http://localhost:8000/docs>
-- ReDoc: <http://localhost:8000/redoc>
-
-### Tests (a partir de iter 7)
-
-```bash
-pytest -q
-```
-
-Stack objetivo: `pytest` + `httpx.AsyncClient` contra `TestClient` de FastAPI, con SQLite en memoria o archivo temporal por test. La lógica pura en `services/roulette.py` es lo primero testeable (sin DB).
-
-## 5. Convenciones
+## 6. Convenciones
 
 ### Código
-
-- **Python**: PEP 8, **snakecase**, type hints en funciones públicas, docstrings en módulos y funciones públicas. Sin comentarios innecesarios (solo donde el código no se explique solo).
-- **Routers**: `def`, **no `async def`**. Sync, porque SQLAlchemy sync + SQLite + baja concurrencia = código 30% más simple, mismo throughput percibido en LAN.
-- **Schemas Pydantic**: separados `XxxCreate` / `XxxUpdate` (campos `Optional`) / `XxxOut`. En PATCH, usar `model_dump(exclude_unset=True)` para no blankar campos no enviados.
-- **Códigos HTTP**: 200 / 201 (crear) / 204 (DELETE) / 400 (validación, FK inválida) / 404 (no existe) / 409 (conflicto de unicidad). Mensajes en `{"detail": "..."}` (default FastAPI; en iter 7 se amplía a `{"detail", "code"}`).
-- **API**: prefijo `/api` en todos los routers; nombres en kebab-case en URLs son aceptables pero los routers usan nombres simples (`/users`, `/tasks`).
-- **Timestamps**: `created_at` lo pone la DB con `default=datetime.utcnow`. `completed_at` / `purchased_at` se setean explícitamente en el router cuando el estado cambia a "hecho".
-- **Validación FK**: explícita en el router, devuelve 400 si el `assigned_to` / `completed_by` no existe.
-- **Soft deletes**: NO. Se hace `DELETE` real. Si se necesita auditoría, añadir `archived_at` (decisión pendiente, no en MVP).
+- **Python**: PEP 8, snake_case, type hints en funciones públicas, docstrings en módulos y funciones públicas. Sin comentarios innecesarios.
+- **Routers**: `async def`. FastAPI async + async SQLAlchemy + asyncpg = mejor throughput con PostgreSQL.
+- **Schemas Pydantic**: separados `XxxCreate` / `XxxUpdate` (campos `Optional`) / `XxxOut`. PATCH usa `model_dump(exclude_unset=True)`.
+- **Códigos HTTP**: 200 / 201 (crear) / 204 (DELETE) / 400 (validación) / 404 (no existe) / 409 (conflicto) / 429 (rate limit).
+- **API**: prefijo `/api`, respuestas JSON.
+- **Timestamps**: `created_at` con `default=func.now()` (PostgreSQL nativo). `completed_at` / `purchased_at` se setean explícitamente.
+- **No soft deletes**: DELETE real.
 - **Errores en español** en los mensajes de `detail`.
 
-### Commits
+### Capas
 
-[Conventional Commits](https://www.conventionalcommits.org/) en español o inglés (el repo mezcla ambos, sigue el idioma del último commit).
+```
+Router (HTTP) → Service (business logic, pure) → Repository (DB access)
+```
+
+- Los **routers** solo: validan input, llaman al service/repo, devuelven respuesta.
+- Los **services** solo: lógica de negocio pura, no conocen HTTP ni DB.
+- Los **repositories** solo: queries a DB, no tienen lógica de negocio.
+- Excepción: CRUD simple puede ir router → repo directo (sin service).
+
+### Paginación (transversal)
+- Todos los GET list aceptan `limit` y `offset`.
+- Respuesta: `{"items": [...], "total": int, "limit": int, "offset": int}`.
+- Usar `services/pagination.paginate(query, limit, offset)` en cada repository.
+- `limit` máximo: Tasks=100, Checklist=200, Shopping=200, Budget=100.
+
+### Batch operations
+- `POST /api/shopping/batch-purchase`: atómico en una transacción.
+- `POST /api/roulette`: atómico en una transacción.
+- Validar todos los IDs antes de aplicar cambios.
+
+### Manejo de errores (global)
+- `app/errors.py` registra handlers globales con `@app.exception_handler`:
+  - `IntegrityError` → 409 (conflicto de unicidad o FK)
+  - `NoResultFound` → 404
+  - `ValidationError` (Pydantic) → 422
+  - `Exception` genérica → 500 con `{"detail": "Error interno del servidor", "code": "INTERNAL_ERROR"}`
+  - `RateLimitExceeded` → 429
+
+### Logging
+- `structlog` configurado en `app/logging_conf.py`.
+- Formato: JSON en producción, consola coloreada en dev.
+- Cada request loggea: method, path, status_code, duration_ms, error_code (si hay).
+- No loggear `detail` de errores 500 en producción (solo `error_code`).
+
+### Health checks
+- `GET /api/health` → `{"status": "ok", "db": "connected", "env": "development", "uptime": 3600}`
+- Verifica conectividad con PostgreSQL (SELECT 1).
+- `GET /api/health/ready` → readiness (DB conectada, migrations aplicadas).
+- `GET /api/health/live` → liveness (servidor responde).
+
+### Rate limiting
+- `slowapi` middleware con límites por defecto:
+  - Endpoints de lista (GET): 30 requests/minuto
+  - Endpoints de escritura (POST/PATCH/DELETE): 10 requests/minuto
+  - `/api/health`: sin límite
+- Configurable vía `RATE_LIMIT_*` en `.env`.
+
+### Pruebas
+- `pytest` + `httpx.AsyncClient` contra `TestClient` de FastAPI.
+- DB: PostgreSQL via `testcontainers-postgres` (o SQLite en memoria para tests unitarios de repos).
+- Tests de integración: levantan PostgreSQL en contenedor Docker, corren migraciones, ejecutan tests.
+- Tests unitarios: lógica pura en `services/` (no requieren DB).
+- Smoke tests: un test por router que verifica 200/404 en endpoints clave.
+- `pytest -q` debe pasar antes de cada commit.
+
+### Commits
+[Conventional Commits](https://www.conventionalcommits.org/) en español o inglés.
 
 - `feat:` nueva funcionalidad
 - `fix:` corrección de bug
@@ -121,102 +204,114 @@ Stack objetivo: `pytest` + `httpx.AsyncClient` contra `TestClient` de FastAPI, c
 - `chore:` tooling, dependencias, config
 - `style:` formato, sin cambio de lógica
 
-Scopes usados: `api`, `db`, `models`, `schemas`, `tests`, `deps`. Ej: `feat(api): implement Task model and CRUD`.
+Scopes: `api`, `bff`, `db`, `models`, `schemas`, `repos`, `tests`, `deps`.
 
-### Paginación (issue #12 — transversal)
+## 7. Decisiones arquitectónicas
 
-- Todos los GET list endpoints aceptan `limit` (default 20-50 según recurso) y `offset` (default 0).
-- Respuesta: `{"items": [...], "total": int, "limit": int, "offset": int}`.
-- Usar `services/pagination.paginate(query, limit, offset)` en cada GET list.
-- No hacer `.all()` directamente — siempre pasar por `paginate()`.
-- `limit` máximo por recurso: Tasks=100, Checklist=200, Shopping=200, Budget=100.
+| Decisión | Opción elegida | Alternativa | Por qué |
+|----------|---------------|-------------|---------|
+| **DB** | PostgreSQL 16+ | SQLite, MongoDB | Escala, ACID, joins nativos, agregaciones, JSONB para flexibilidad futura |
+| **Async** | async routers + async SQLAlchemy | sync | PostgreSQL con pool de conexiones se beneficia de async; sync servía para SQLite |
+| **BFF vs API pura** | BFF | API REST genérica | La BFF da forma a respuestas para la SPA mobile-first, reduciendo payload y viajes red |
+| **Repository** | Capa explícita de repos | Queries en routers | Testabilidad, separación de concerns, facilita cambiar ORM o DB después |
+| **Rate limiting** | slowapi | Middleware custom | Librería madura, configurable por ruta, headers estándar (X-RateLimit-Remaining) |
+| **Logging** | structlog | logging estándar | Logging estructurado nativo, fácil de enviar a sistemas externos (Datadog, ELK) |
+| **Exception handling** | Global handlers | Try/except en cada router | Código más limpio, errores consistentes, un solo punto de cambio |
+| **Health checks** | /health, /ready, /live | Solo /health | Patrón estándar para orquestadores (K8s, Docker Compose healthcheck) |
+| **Tests** | testcontainers-postgres | SQLite en memoria | Tests contra la misma DB que producción evita falsos positivos |
+| **Migrations** | create_all en startup | Alembic | El equipo decidió no usar Alembic; create_all es suficiente para el volumen actual |
+| **NoSQL** | No se usa | MongoDB, DynamoDB | El dominio es relacional; NoSQL añade complejidad sin beneficio tangible |
 
-### Batch operations (issue #12)
+## 8. Dependencias nuevas (requirements.txt)
 
-- `POST /api/shopping/batch-purchase`: recibe `{ids: int[], purchased_by: int}`, marca en una transacción.
-- `POST /api/roulette`: recibe `{task_ids: int[], user_ids: int[], seed?: int}`, asigna en una transacción.
-- Validar que todos los IDs existan antes de aplicar cambios.
-- Toda batch operation debe ser atómica (una transacción).
+```
+# Actuales
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+sqlalchemy==2.0.35
+pydantic==2.9.2
+python-dotenv==1.0.1
 
-### UI y copy
+# Nuevas — PostgreSQL
+asyncpg
+psycopg2-binary          # sync fallback para scripts
 
-- **No emojis en código fuente** (salvo iconos UI acordados en `frontend/`).
-- Mensajes de error de la API en español.
+# Nuevas — infra
+slowapi                  # rate limiting
+structlog                # logging estructurado
+testcontainers-postgres  # tests con PostgreSQL real
+pytest-asyncio           # tests asíncronos
+```
 
-## 6. Mapa de iteraciones
+## 9. Mapa de iteraciones
 
 Resumen del [`SPEC.md` §6](./SPEC.md). Los issues viven en GitHub con label `iter-N`.
 
 | Iter | Estado | Issues | Entregable |
-|---|---|---|---|---|
+|---|---|---|---|
 | **1** | ✅ hecho | — | Scaffold, `requirements.txt`, `init_db`, `GET /api/health` |
 | **2** | 🟡 parcial | [#1](https://github.com/contracamilo/oc-tr-backend/issues/1) (Users), [#2](https://github.com/contracamilo/oc-tr-backend/issues/2) (Tasks) | CRUD de Users + Tasks |
 | **3** | ⬜ | [#3](https://github.com/contracamilo/oc-tr-backend/issues/3) | Ruleta: `services/roulette.assign_tasks()` + `POST /api/roulette` |
 | **4** | ⬜ | [#4](https://github.com/contracamilo/oc-tr-backend/issues/4) | Checklist semanal (CRUD + `?week_start=`) |
 | **5** | ⬜ | [#5](https://github.com/contracamilo/oc-tr-backend/issues/5) | Lista de mercado (CRUD + filtros) |
 | **6** | ⬜ | [#6](https://github.com/contracamilo/oc-tr-backend/issues/6) (Budget CRUD), [#7](https://github.com/contracamilo/oc-tr-backend/issues/7) (Summary) | Presupuesto mensual + endpoint `/budget/summary` |
-| **7** | ⬜ | [#8](https://github.com/contracamilo/oc-tr-backend/issues/8) (static), [#9](https://github.com/contracamilo/oc-tr-backend/issues/9) (tests), [#11](https://github.com/contracamilo/oc-tr-backend/issues/11) (README) | Montar frontend como static + pytest + quickstart |
+| **7** | ⬜ | [#8](https://github.com/contracamilo/oc-tr-backend/issues/8) (static), [#9](https://github.com/contracamilo/oc-tr-backend/issues/9) (tests), [#11](https://github.com/contracamilo/oc-tr-backend/issues/11) (README) | Static files + pytest + quickstart |
 | **#12** | ⬜ | [#12](https://github.com/contracamilo/oc-tr-backend/issues/12) | Paginación transversal + batch operations |
+| **Infra** | ⬜ | — | Migrar a PostgreSQL, async, BFF, repos, rate limiting, logging, errors |
 
-> ✅ **Resuelto**: el cuerpo de los issues se realineó con `gh issue edit --body-file`. `#1` describe User, `#2` describe Task, `#10` quedó cerrado como duplicado histórico de `#1`, y `#11` cubre el README. La spec apunta a `#1/#2` correctamente.
+## 10. Plan de implementación — Infraestructura profesional
 
-## 7. Plan de implementación — Issue #12 (Paginación + Batch)
+Antes de tocar features, hay que migrar la base del proyecto a la arquitectura profesional.
+
+### Fase 0: Fundación profesional
+
+**Objetivo**: Migrar de SQLite sync a PostgreSQL async con toda la infraestructura BFF.
+
+**Dependencias**: Ninguna (es requisito para todo lo demás)
+
+**Componentes a crear/modificar**:
+- `app/config.py` — añadir `DATABASE_URL` postgres, `RATE_LIMIT_*`, `LOG_LEVEL`
+- `app/database.py` — engine asyncio con asyncpg, `AsyncSession`, `get_db` async generator
+- `app/logging_conf.py` — structlog config (nuevo)
+- `app/errors.py` — global exception handlers (nuevo)
+- `app/main.py` — montar rate limiter, exception handlers, health checks, structlog middleware
+- `app/repositories/base.py` — `BaseRepository` con CRUD genérico (nuevo)
+
+**Pasos**:
+1. Cambiar `DATABASE_URL` a PostgreSQL y configurar async engine
+2. Migrar modelos de sync a async SQLAlchemy
+3. Configurar structlog con middleware de request logging
+4. Implementar global exception handlers en `errors.py`
+5. Montar slowapi con límites por defecto
+6. Implementar health checks (`/health`, `/ready`, `/live`)
+7. Crear `BaseRepository` con métodos genéricos `get`, `list`, `create`, `update`, `delete`
+8. Mover queries existentes de routers a repositorios concretos
+9. Configurar `testcontainers-postgres` para tests de integración
+10. Actualizar `.env.example` con nuevas variables
+
+**Definition of done**: `pytest -q` pasa, `/api/health` responde con DB conectada, rate limiting activo, errores devuelven formato uniforme.
+
+### Fase A-G (Issue #12)
+
+Ver `.sdd/api-pagination.md` para el detalle. Estas fases se implementan sobre la Fase 0.
 
 | Fase | Issues | Depende de | Entregable |
 |---|---|---|---|
-| A | #12 (infra) | — | `services/pagination.py` + `PaginatedResponse[T]` en `schemas.py` |
+| A | #12 (infra) | Fase 0 | `PaginatedResponse[T]`, `paginate()`, schemas |
 | B | #12 (tasks) | A | Task list con paginación |
 | C | #3, #12 (roulette) | A | Roulette endpoint + lógica `assign_tasks()` |
 | D | #4, #12 (checklist) | A | Checklist list con paginación |
 | E | #5, #12 (shopping) | A | Shopping list + `POST /batch-purchase` |
 | F | #6, #12 (budget) | A | Budget list con paginación |
-| G | #8, #9, #11 | A-F | Router registration, static files, tests, README |
+| G | #8, #9, #11 | A-F | Static files, pytest smoke, README |
 
-Cada fase puede ser implementada por un agente distinto (todas dependen de A). Ver `.sdd/api-pagination.md` para la especificación completa.
+## 11. Para agents
 
-## 8. Decisiones arquitectónicas
-
-- **Sync, no async** en routers: SQLAlchemy sync + SQLite + 2-5 usuarios en LAN no justifican la complejidad de async. Reversible capa a capa.
-- **SQLite** con `check_same_thread=False`: file-based, cero-config. WAL mode se puede activar con `PRAGMA` si hace falta. Migrar a Postgres = cambiar `DATABASE_URL` y revisar tipos.
-- **Sin auth**: los convivientes se fían entre sí y comparten LAN. Si se expone fuera, añadir middleware. Bind a `127.0.0.1` por defecto.
-- **`Base.metadata.create_all` en startup** (iter 1-6). Migrar a Alembic en iter 7 cuando haya DBs en uso y se cambie un modelo.
-- **`Pydantic v2`** con schemas in/out separados: evita el bug clásico de PUT con campos nulos.
-- **Lógica pura en `services/`** (no toca DB), persistencia en routers. La ruleta es el primer ejemplo: `assign_tasks()` testable sin DB.
-- **`datetime.utcnow` en columnas** (no `func.now()`) para que el timestamp sea portable entre SQLite y Postgres sin sorpresas.
-- **Frontend servido desde FastAPI** (decisión de iter 7, `app.mount("/", StaticFiles(...))`). Hasta entonces, dev con servidor estático aparte.
-
-### Para issue #12
-
-- Leer `.sdd/api-pagination.md` antes de implementar cualquier cambio de paginación o batch.
+- Leer `SPEC.md` y `.sdd/*.md` antes de implementar cualquier cambio.
+- La **Fase 0** (migración a PostgreSQL async + BFF) debe completarse antes de tocar features.
 - Todos los GET list DEBEN usar `paginate()` — no hacer `.all()` directo.
 - Todas las batch operations DEBEN ser atómicas (una transacción).
-
-## 9. Reglas de oro
-
-### ✅ Do
-
-- Lee `SPEC.md` antes de tocar código de una iteración. El modelo de datos, endpoints y acceptance criteria están ahí.
-- Sigue el patrón **router → schema → service → model**. No metas SQL en los routers (salvo el caso del router de la ruleta en iter 3, que delega en `services/`).
-- En PATCH, usa `model_dump(exclude_unset=True)` para updates parciales.
-- En `completed_at` / `purchased_at`: setea explícitamente cuando el estado cambia a "hecho", limpia explícitamente cuando vuelve a "no hecho".
-- Si introduces un cambio que rompe un contrato con el frontend (path, payload, status code), actualiza también la spec del frontend o coordina con su issue.
-- Si un error 500 viene de una FK inválida, captura `IntegrityError` y devuelve 400 con mensaje claro.
-
-### ❌ Don't
-
-- **No** añadas `async def` en routers sin discutirlo antes. Sync es la decisión de arquitectura.
-- **No** uses soft deletes (`is_deleted`, `archived_at`) salvo que se apruebe explícitamente — no está en MVP.
-- **No** crees un framework de "utils" / "helpers" genérico. Si una función se usa en 2+ sitios, muévela a `services/` con un nombre que describa el dominio.
-- **No** añadas dependencias a `requirements.txt` sin justificación en el commit (`sqlalchemy-utils`, `alembic` se aprueban en su iter).
-- **No** metas `print()` para debug. Usa `logging` o elimina el código.
-- **No** crees migraciones manuales (Alembic) hasta iter 7. `create_all` es suficiente mientras no haya DBs en uso en producción.
-- **No** subas `.env`, `data/*.db`, `__pycache__/` ni `.venv/` — el `.gitignore` ya los cubre.
-- **No** uses caracteres no-ASCII en mensajes de commit o nombres de archivo (acentos, ñ) — causar problemas en cross-platform.
-- **No** inventes endpoints que no estén en `SPEC.md` §7 sin actualizar la spec primero.
-
-### Pendiente de decidir
-
-- Formato de errores en iter 7: ¿`{"detail"}` simple o `{"detail", "code"}` estructurado? (SPEC §3 lo deja abierto.)
-- ¿Activar `PRAGMA journal_mode=WAL` en `init_db()`? Recomendado para concurrencia, pero no se ha hecho.
-- ¿Migrar `datetime.utcnow` a `datetime.now(timezone.utc)` cuando se toque el modelo? `utcnow` está deprecado en Python 3.12+.
-- Política de FK: capturar `IntegrityError` y devolver 400 está dicho en SPEC §2/iter 2 acceptance criteria, pero la implementación exacta se decide en su issue.
+- No importar SQLAlchemy en routers — usar repositories.
+- Los routers son `async def` — no olvidar `await` en llamadas a repo.
+- Ver con `pytest -q` que no se rompe nada existente.
+- Los mensajes de error van en español.

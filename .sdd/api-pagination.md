@@ -1,6 +1,7 @@
 # API Pagination & Batch Specification
 
-> Especificación técnica de paginación y operaciones batch para la API mobile-first de Hogar.
+> Especificación técnica de paginación y operaciones batch para la BFF mobile-first de Hogar.
+> Esta BFF orquesta respuestas ligeras para la SPA mobile-first, usando PostgreSQL + async SQLAlchemy + Repository pattern.
 
 ---
 
