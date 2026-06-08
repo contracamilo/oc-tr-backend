@@ -1,5 +1,24 @@
+# Core
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 sqlalchemy==2.0.35
 pydantic==2.9.2
 python-dotenv==1.0.1
+
+# PostgreSQL
+asyncpg
+psycopg2-binary
+
+# Infra
+slowapi
+structlog
+
+# Auth (iter 2)
+python-jose[cryptography]
+passlib[bcrypt]
+
+# Tests (iter 7)
+pytest
+pytest-asyncio
+httpx
+testcontainers[postgres]

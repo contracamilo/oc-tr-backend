@@ -28,3 +28,6 @@ data/*.db-shm
 *.swp
 *.swo
 .DS_Store
+
+# Docker
+postgres_data/
