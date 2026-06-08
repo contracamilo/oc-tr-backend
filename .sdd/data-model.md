@@ -151,6 +151,60 @@ Implicación: `DELETE /api/users/{id}` siempre devuelve **204** (no hay 409 por 
 
 ---
 
+## 2.1 Autenticación y perfil (replanteamiento 2026-06)
+
+> Con el paso a **PWA con login por dispositivo** (ver `docs/PRODUCT_PLAN.md` §6), `User` se amplía con campos de cuenta/perfil y se añaden `Invite` y `RefreshToken`. Modelo de **un hogar por instancia** (sin entidad `Household`); el acceso se restringe por **código de invitación**. Esto **supera el "sin auth"** de `architecture.md` §8 / ADR-005.
+
+### `User` (campos añadidos)
+
+| Campo | Tipo PostgreSQL | Notas |
+|-------|-----------------|-------|
+| `email` | `CITEXT UNIQUE NOT NULL` | identificador de login (case-insensitive) |
+| `password_hash` | `VARCHAR(255) NOT NULL` | bcrypt/argon2; **nunca** en `UserOut` ni en logs |
+| `display_name` | `VARCHAR(255) NOT NULL` | sustituye al antiguo `name` |
+| `bio` | `TEXT` | editable por el propio usuario |
+| `theme_preference` | `VARCHAR(10)` CHECK (`light`/`dark`/`system`) | sincroniza tema entre dispositivos |
+| `role` | `VARCHAR(10)` CHECK (`admin`/`member`) | el primer registro (bootstrap) es `admin` |
+| `is_active` | `BOOLEAN DEFAULT true` | `false` desactiva el login sin borrar históricos |
+| `last_login_at` | `TIMESTAMPTZ` | |
+| `updated_at` | `TIMESTAMPTZ` | |
+
+`name` previo → `display_name`. `color` y `avatar` se mantienen (parte del perfil personalizable).
+
+### `Invite` (nueva)
+
+| Campo | Tipo | Notas |
+|-------|------|-------|
+| `id` | `SERIAL PK` | |
+| `code` | `VARCHAR(64) UNIQUE NOT NULL` | token URL-safe aleatorio |
+| `role` | `VARCHAR(10)` CHECK (`admin`/`member`) | rol con el que entra el invitado (`member` por defecto) |
+| `created_by` | FK → `users.id` (ON DELETE SET NULL) | quién la generó |
+| `expires_at` | `TIMESTAMPTZ NOT NULL` | caducidad (p. ej. +7 días) |
+| `used_at` | `TIMESTAMPTZ` | null = sin usar |
+| `used_by` | FK → `users.id` (ON DELETE SET NULL) | quién la canjeó |
+| `created_at` | `TIMESTAMPTZ DEFAULT now()` | |
+
+Reglas: **un solo uso**, caduca. Registro válido ⇔ `code` existe, `used_at IS NULL` y `expires_at > now()`. **Excepción bootstrap**: si `SELECT count(*) FROM users = 0`, el primer registro crea al `admin` **sin código**.
+
+### `RefreshToken` (nueva)
+
+| Campo | Tipo | Notas |
+|-------|------|-------|
+| `id` | `SERIAL PK` | |
+| `user_id` | FK → `users.id` (ON DELETE CASCADE) | dueño de la sesión |
+| `token_hash` | `VARCHAR(255) NOT NULL` | hash del refresh token (no en claro) |
+| `expires_at` | `TIMESTAMPTZ NOT NULL` | caducidad larga (p. ej. +30 días) |
+| `revoked_at` | `TIMESTAMPTZ` | logout o rotación → revocado |
+| `created_at` | `TIMESTAMPTZ DEFAULT now()` | |
+
+> **Nota**: a diferencia de las FK hacia `users.id` del dominio (ADR-007: SET NULL), `refresh_tokens.user_id` usa **CASCADE** — al borrar un usuario se eliminan sus sesiones.
+
+### Actor derivado del token (cambio de contrato)
+
+Las columnas de "quién hizo la acción" (`tasks.assigned_to` para auto-asignación, `checklist_items.completed_by`, `shopping_items.added_by`/`purchased_by`, `budget_items.user_id`) **se rellenan con el usuario autenticado** (`current_user.id`), **no** con un valor del request body. La política ON DELETE SET NULL (ADR-007) no cambia. Excepción: `tasks.assigned_to` y los `user_ids` de la ruleta sí viajan en el body cuando referencian a *otros* usuarios.
+
+---
+
 ## 3. Índices recomendados
 
 ```sql
@@ -169,6 +223,11 @@ CREATE INDEX idx_shopping_category ON shopping_items(category);
 CREATE INDEX idx_budget_month ON budget_items(month);
 CREATE INDEX idx_budget_month_type ON budget_items(month, type);
 CREATE INDEX idx_budget_month_category ON budget_items(month, category);
+
+-- Auth: login y canje de invitación
+CREATE UNIQUE INDEX idx_users_email ON users(email);          -- (CITEXT ya es único)
+CREATE UNIQUE INDEX idx_invites_code ON invites(code);
+CREATE INDEX idx_refresh_tokens_user ON refresh_tokens(user_id);
 ```
 
 ---

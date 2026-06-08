@@ -330,10 +330,24 @@ async def test_list_tasks_paginated(postgres_container, app):
 
 ### ADR-005: Rate Limiting con slowapi
 
-- **Contexto**: Sin autenticación, la API necesita protección básica contra abusos.
-- **Decisión**: slowapi con límites por endpoint tipo (GET vs POST/PATCH/DELETE).
+- **Contexto**: La API necesita protección básica contra abusos. *(Antes: "sin autenticación"; tras ADR-008 el rate limiting se centra en fuerza bruta sobre `/auth/*` y abuso general.)*
+- **Decisión**: slowapi con límites por endpoint tipo (GET vs POST/PATCH/DELETE) y límites estrictos en `/auth/login` y `/auth/register`.
 - **Consecuencias**: Dependencia adicional, pero evita implementar rate limiting custom.
 - **Alternativas**: Middleware custom (más control, más código).
+
+### ADR-008: Autenticación JWT + perfiles (replanteamiento 2026-06)
+
+- **Contexto**: El producto pasa a **PWA instalable en el móvil de cada conviviente**, con login y perfil propio (ver `docs/PRODUCT_PLAN.md`). Esto **revierte** la decisión "sin auth" (este ADR supera la §8 original).
+- **Decisión**: Autenticación con **JWT** — access token corto (≈15 min, en `Authorization: Bearer`) + refresh token largo (≈30 días) almacenado **hasheado** en tabla `refresh_tokens` (revocable, rotado en cada `/refresh`) y entregado al cliente como cookie `httpOnly`+`Secure`. Contraseñas con `passlib[bcrypt]`. Dependencia `get_current_user` protege toda ruta de dominio; públicas solo `/health*` y `/auth/{register,login,refresh}`.
+- **Consecuencias**: Nuevas tablas `Invite` y `RefreshToken`, `User` ampliado (email, password_hash, role, is_active, …); el "actor" de las acciones se deriva del token, no del body; HTTPS pasa a ser recomendado (cookie `Secure`). Nuevas deps: `python-jose`/`pyjwt`, `passlib[bcrypt]`.
+- **Alternativas**: Sesiones server-side con cookie (más estado), OAuth social (requiere proveedor externo, fuera de MVP).
+
+### ADR-009: Onboarding por invitación, un hogar por instancia
+
+- **Contexto**: Hay que controlar quién entra al hogar sin construir multi-tenancy.
+- **Decisión**: **Un hogar por instancia** (sin entidad `Household`). El **primer registro** (DB sin usuarios) crea al `admin` sin código (bootstrap); el resto requiere un **código de invitación** de un solo uso y con caducidad, generado por un admin.
+- **Consecuencias**: Sin `household_id` en las tablas; aislamiento a nivel de instancia. Multi-hogar queda como backlog (añadiría `household_id` y scoping en todas las queries).
+- **Alternativas**: Registro abierto (sin control de acceso), multi-hogar desde el inicio (complejidad innecesaria para el caso de uso).
 
 ### ADR-006: testcontainers-postgres en tests
 
@@ -353,8 +367,12 @@ async def test_list_tasks_paginated(postgres_container, app):
 
 ## 8. Seguridad
 
-- **Rate limiting**: Protección contra abusos a nivel de BFF
-- **Bind a localhost**: Por defecto, la BFF solo escucha en `127.0.0.1` (LAN)
-- **CORS**: Lista blanca de orígenes permitidos vía variable de entorno
-- **Sin auth**: Decisión deliberada para el caso de uso (convivientes en LAN)
-- **HTTP**: Sin HTTPS en LAN (se puede añadir proxy reverso si se expone)
+> **Actualizado (ADR-008/009).** La postura original "sin auth" queda superada: el producto es ahora una PWA con login por dispositivo.
+
+- **Autenticación (ADR-008)**: JWT access (Bearer, corto) + refresh hasheado y revocable (cookie `httpOnly`+`Secure`). `get_current_user` protege todas las rutas de dominio. Contraseñas con bcrypt.
+- **Autorización**: rol `admin`/`member`; rutas de gestión (`/invites`, `PATCH`/`DELETE /users/{id}`) exigen admin.
+- **Onboarding (ADR-009)**: registro por invitación de un solo uso; bootstrap del primer admin.
+- **Rate limiting**: protección de fuerza bruta en `/auth/*` y abuso general a nivel de BFF.
+- **CORS**: lista blanca de orígenes vía variable de entorno; con credenciales (cookie de refresh) requiere origen explícito (no `*`).
+- **Transporte**: HTTPS **recomendado** (la cookie `Secure` lo exige). En LAN, proxy reverso (Caddy/nginx) con TLS; bind a `127.0.0.1` por defecto.
+- **Secretos**: `JWT_SECRET` y flags de cookie en `.env` (nunca commiteados).

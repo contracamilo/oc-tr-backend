@@ -9,7 +9,9 @@
 
 ## 1. Project overview
 
-**Hogar** es una app web ligera para gestionar la convivencia doméstica (tareas, compras, presupuesto, asignación de responsabilidades) entre 2-5 personas. Este repo es la **API BFF** en FastAPI + PostgreSQL que sirve la API REST para el frontend SPA (Vue 3 + Vite + Pinia + TanStack Query) y en producción sirve sus estáticos compilados.
+**Hogar** es una app web ligera para gestionar la convivencia doméstica (tareas, compras, presupuesto, asignación de responsabilidades) entre 2-5 personas. Este repo es la **API BFF** en FastAPI + PostgreSQL que sirve la API REST para el frontend SPA/PWA (Vue 3 + Vite + Pinia + TanStack Query) y en producción sirve sus estáticos compilados.
+
+> **Replanteamiento 2026-06 (auth + PWA)**: el producto pasa a **PWA con login por dispositivo**. La BFF gana **autenticación JWT + perfiles + invitaciones** (un hogar por instancia). Ver `docs/PRODUCT_PLAN.md` y los ADR-008/009 en `.sdd/architecture.md`. Toda ruta de dominio exige `Authorization: Bearer`; el "actor" de cada acción se deriva del token (no del body).
 
 > Iteración actual: **1 — Estructura y plan**. Ver [`SPEC.md`](./SPEC.md) para el plan SDD completo.
 
@@ -29,6 +31,8 @@
 | Logging | structlog | latest | Logging estructurado listo para producción |
 | Tests | `pytest` + `httpx.AsyncClient` | latest | Tests asíncronos contra la BFF |
 | DB en tests | testcontainers-postgres | latest | PostgreSQL real en tests (no mock) |
+| Auth (JWT) | `python-jose` (o `pyjwt`) | latest | Access/refresh tokens firmados |
+| Password hashing | `passlib[bcrypt]` | latest | Hash de contraseñas (ADR-008) |
 
 **Evaluación NoSQL**: MongoDB, DynamoDB y Firestore fueron evaluados. Se descartan porque el dominio es relacional: las consultas requieren joins (task→user, shopping→user), agregaciones (budget summary con GROUP BY), y transacciones atómicas multi-fila (roulette, batch-purchase). PostgreSQL maneja esto de forma nativa, con mejor performance y sin la complejidad operativa de NoSQL para este volumen de datos (<1000 registros/hogar). Si el día de mañana se necesitara un campo flexible por entidad, PostgreSQL tiene `JSONB`.
 
@@ -101,13 +105,16 @@ oc-tr-backend/
     ├── main.py                ← create_app(), CORS, rate limiter, startup, health, exception handlers
     ├── config.py              ← Settings desde .env (DB, CORS, rate limit, logging)
     ├── database.py            ← async engine, async session, get_db, init_db
-    ├── models.py              ← SQLAlchemy models (User, Task, ChecklistItem, ShoppingItem, BudgetItem)
-    ├── schemas.py             ← Pydantic schemas: Create/Update/Out + PaginatedResponse[T]
-    ├── errors.py              ← Global exception handlers (IntegrityError, NotFound, ValidationError)
+    ├── security.py            ← hashing (passlib), JWT encode/decode, get_current_user, require_admin
+    ├── models.py              ← SQLAlchemy models (User+auth, Invite, RefreshToken, Task, ChecklistItem, ShoppingItem, BudgetItem)
+    ├── schemas.py             ← Pydantic schemas: Create/Update/Out + Auth/Token/Invite + PaginatedResponse[T]
+    ├── errors.py              ← Global exception handlers (IntegrityError, NotFound, ValidationError, 401/403)
     ├── logging_conf.py        ← structlog configuration
     ├── routers/
     │   ├── __init__.py
-    │   ├── users.py           ← CRUD Users
+    │   ├── auth.py            ← register, login, refresh, logout, GET/PATCH /me
+    │   ├── invites.py         ← (admin) crear/listar/revocar invitaciones
+    │   ├── users.py           ← GET users + (admin) PATCH/DELETE (sin POST: alta por register)
     │   ├── tasks.py           ← CRUD Tasks + paginación
     │   ├── checklist.py       ← CRUD Checklist + paginación
     │   ├── shopping.py        ← CRUD Shopping + paginación + batch-purchase
@@ -121,7 +128,9 @@ oc-tr-backend/
     └── repositories/
         ├── __init__.py
         ├── base.py            ← BaseRepository with common CRUD (get, list, create, update, delete)
-        ├── user_repo.py       ← UserRepository extends BaseRepository
+        ├── user_repo.py       ← UserRepository (get_by_email, etc.)
+        ├── invite_repo.py     ← InviteRepository (canje/validación de códigos)
+        ├── token_repo.py      ← RefreshTokenRepository (rotación/revocación)
         ├── task_repo.py       ← TaskRepository (adds filtering by status, assigned_to)
         ├── checklist_repo.py  ← ChecklistItemRepository (adds filtering by week_start)
         ├── shopping_repo.py   ← ShoppingItemRepository (adds filtering by purchased, category)
@@ -224,6 +233,8 @@ Scopes: `api`, `bff`, `db`, `models`, `schemas`, `repos`, `tests`, `deps`.
 | **Health checks** | /health, /ready, /live | Solo /health | Patrón estándar para orquestadores (K8s, Docker Compose healthcheck) |
 | **Tests** | testcontainers-postgres | SQLite en memoria | Tests contra la misma DB que producción evita falsos positivos |
 | **Migrations** | create_all en startup | Alembic | El equipo decidió no usar Alembic; create_all es suficiente para el volumen actual |
+| **Auth** (ADR-008) | JWT access + refresh revocable | Sin auth (anterior), sesiones server-side | PWA con login por dispositivo; refresh hasheado en DB permite logout/rotación |
+| **Onboarding** (ADR-009) | Invitación, un hogar/instancia | Registro abierto, multi-hogar | Control de acceso simple sin multi-tenancy; bootstrap del primer admin |
 | **NoSQL** | No se usa | MongoDB, DynamoDB | El dominio es relacional; NoSQL añade complejidad sin beneficio tangible |
 
 ## 8. Dependencias nuevas (requirements.txt)
@@ -245,6 +256,10 @@ slowapi                  # rate limiting
 structlog                # logging estructurado
 testcontainers-postgres  # tests con PostgreSQL real
 pytest-asyncio           # tests asíncronos
+
+# Nuevas — auth (ADR-008)
+python-jose[cryptography]  # JWT access/refresh (o pyjwt)
+passlib[bcrypt]            # hashing de contraseñas
 ```
 
 ## 9. Mapa de iteraciones

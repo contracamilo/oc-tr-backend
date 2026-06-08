@@ -6,6 +6,59 @@
 
 ---
 
+## 0. Autenticación (replanteamiento 2026-06)
+
+> Con el paso a **PWA con login** (ver `docs/PRODUCT_PLAN.md` §7), **toda ruta exige `Authorization: Bearer <access>`** salvo las marcadas **público**. Esto supera el "sin auth" de `architecture.md` §8 / ADR-005.
+>
+> - **Rutas públicas**: `GET /api/health*`, `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/refresh`.
+> - **Actor derivado del token**: los bodies de dominio **ya no envían** `completed_by` / `purchased_by` / `added_by` / `user_id` (budget) / `purchased_by` (batch). El backend los rellena con `current_user.id` vía `Depends(get_current_user)`. Siguen en el body solo los que referencian a *otros* usuarios (`assigned_to`, `roulette.user_ids`).
+> - **Roles**: rutas marcadas **(admin)** requieren `current_user.role == "admin"` (403 si no).
+
+### `POST /api/auth/register` — público
+
+Crea cuenta. `invite_code` es obligatorio **salvo** que no exista ningún usuario (bootstrap → primer usuario es `admin`).
+
+**Request**: `{"email": "ana@hogar.lan", "password": "•••", "display_name": "Ana", "invite_code": "x7Kq..."}`
+**Response 201**: `{"user": {UserOut}, "access_token": "...", "token_type": "bearer"}` + cookie `httpOnly` `refresh_token`.
+**Errors**: 409 (email duplicado), 400 (`invite_code` inválido/usado/caducado), 422 (password débil).
+
+### `POST /api/auth/login` — público
+
+**Request**: `{"email": "ana@hogar.lan", "password": "•••"}`
+**Response 200**: `{"access_token": "...", "token_type": "bearer", "user": {UserOut}}` + cookie `httpOnly` `refresh_token`.
+**Errors**: 401 (credenciales inválidas), 403 (`is_active = false`).
+
+### `POST /api/auth/refresh` — público (requiere cookie)
+
+Rota el refresh token (revoca el anterior, emite uno nuevo) y devuelve un nuevo access.
+**Response 200**: `{"access_token": "...", "token_type": "bearer"}` + nueva cookie.
+**Errors**: 401 (refresh ausente/expirado/revocado).
+
+### `POST /api/auth/logout`
+
+Revoca el refresh token actual (`revoked_at = now()`) y limpia la cookie. **Response 204**.
+
+### `GET /api/auth/me`
+
+**Response 200**: `UserOut` del usuario autenticado.
+
+### `PATCH /api/auth/me`
+
+Editar **mi** perfil. Campos: `display_name`, `color`, `avatar`, `bio`, `theme_preference`, `password` (opcional; si viene, re-hashea). `email`/`role`/`is_active` **no** editables aquí.
+**Response 200**: `UserOut` actualizado.
+
+### Invitaciones (admin)
+
+| Método | Path | Descripción |
+|---|---|---|
+| GET | `/api/invites` | (admin) Listar invitaciones (incluye estado usado/caducado). |
+| POST | `/api/invites` | (admin) Crear. Body: `{role?: "member"}` → `{id, code, role, expires_at, created_at}`. |
+| DELETE | `/api/invites/{id}` | (admin) Revocar una invitación sin usar. 204 / 404. |
+
+`UserOut` (sin secretos): `{id, email, display_name, color, avatar, bio, theme_preference, role, is_active, created_at}`. **Nunca** incluye `password_hash`.
+
+---
+
 ## 1. Health
 
 ### `GET /api/health`
@@ -33,9 +86,11 @@
 
 ## 2. Users
 
+> **Cambio (auth)**: el alta de convivientes ocurre vía `POST /api/auth/register` con invitación — **ya no existe `POST /api/users`**. La edición del perfil propio es `PATCH /api/auth/me` (§0). Aquí solo queda lectura + gestión **admin** (rol/`is_active`/borrado).
+
 ### `GET /api/users`
 
-Listar usuarios. Sin paginación (pocos registros).
+Listar usuarios. Sin paginación (pocos registros). Requiere autenticación.
 
 **Response 200**:
 ```json
@@ -45,36 +100,26 @@ Listar usuarios. Sin paginación (pocos registros).
 ]
 ```
 
-### `POST /api/users`
+### `POST /api/users` — **eliminado**
 
-**Request**:
-```json
-{"name": "Ana", "color": "#FF5733", "avatar": null}
-```
-
-**Response 201**:
-```json
-{"id": 3, "name": "Ana", "color": "#FF5733", "avatar": null, "created_at": "2026-06-08T12:00:00"}
-```
-
-**Errors**: 409 (name duplicado)
+Sustituido por `POST /api/auth/register` (§0). El alta es por invitación.
 
 ### `GET /api/users/{user_id}`
 
 **Response 200**: User object
 **Response 404**: `{"detail": "Usuario no encontrado", "code": "NOT_FOUND"}`
 
-### `PATCH /api/users/{user_id}`
+### `PATCH /api/users/{user_id}` — (admin)
 
-**Request**: Partial user fields (exclude_unset=True)
+Solo gestión administrativa: `role`, `is_active`. (El perfil propio se edita en `PATCH /api/auth/me`.)
 
 **Response 200**: User object actualizado
-**Errors**: 404, 409 (name duplicado)
+**Errors**: 403 (no admin), 404
 
-### `DELETE /api/users/{user_id}`
+### `DELETE /api/users/{user_id}` — (admin)
 
-**Response 204**: No content
-**Errors**: 404
+**Response 204**: No content. FK → User con `ON DELETE SET NULL` (ADR-007); nunca 409 por FK.
+**Errors**: 403 (no admin), 400 (no puedes eliminarte a ti mismo), 404
 
 **Behavior**: Todas las FK hacia `users.id` están definidas con `ON DELETE SET NULL` (ver `data-model.md` §2). Al borrar un usuario, sus tareas e items históricos quedan referencialmente válidos con `*_by = NULL` ("sin asignar" / "sin autor"). No produce 409 por FK violation.
 
@@ -440,10 +485,12 @@ Marcar múltiples items como comprados en una sola transacción.
 
 | Código | Significado | Uso |
 |--------|-------------|-----|
-| 200 | OK | GET, PATCH exitoso, POST batch |
-| 201 | Created | POST de nuevo recurso |
-| 204 | No Content | DELETE exitoso |
-| 400 | Bad Request | Validación de negocio, FK inválida |
+| 200 | OK | GET, PATCH exitoso, POST batch, login/refresh |
+| 201 | Created | POST de nuevo recurso, register |
+| 204 | No Content | DELETE exitoso, logout |
+| 400 | Bad Request | Validación de negocio, FK inválida, invitación inválida |
+| 401 | Unauthorized | Sin token / token inválido / credenciales incorrectas |
+| 403 | Forbidden | Usuario inactivo o sin rol admin |
 | 404 | Not Found | Recurso no existe |
 | 409 | Conflict | Unique violation, FK violation |
 | 422 | Validation Error | Formato inválido (Pydantic) |
