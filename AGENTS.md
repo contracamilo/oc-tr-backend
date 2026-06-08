@@ -112,6 +112,7 @@ oc-tr-backend/
     │   ├── checklist.py       ← CRUD Checklist + paginación
     │   ├── shopping.py        ← CRUD Shopping + paginación + batch-purchase
     │   ├── budget.py          ← CRUD Budget + paginación + summary
+    │   ├── dashboard.py       ← GET /api/dashboard (KPIs agregados)
     │   └── roulette.py        ← POST /api/roulette (batch assignment)
     ├── services/
     │   ├── __init__.py
@@ -258,7 +259,7 @@ Resumen del [`SPEC.md` §6](./SPEC.md). Los issues viven en GitHub con label `it
 | **4** | ⬜ | [#4](https://github.com/contracamilo/oc-tr-backend/issues/4) | Checklist semanal (CRUD + `?week_start=`) |
 | **5** | ⬜ | [#5](https://github.com/contracamilo/oc-tr-backend/issues/5) | Lista de mercado (CRUD + filtros) |
 | **6** | ⬜ | [#6](https://github.com/contracamilo/oc-tr-backend/issues/6) (Budget CRUD), [#7](https://github.com/contracamilo/oc-tr-backend/issues/7) (Summary) | Presupuesto mensual + endpoint `/budget/summary` |
-| **7** | ⬜ | [#8](https://github.com/contracamilo/oc-tr-backend/issues/8) (static), [#9](https://github.com/contracamilo/oc-tr-backend/issues/9) (tests), [#11](https://github.com/contracamilo/oc-tr-backend/issues/11) (README) | Static files + pytest + quickstart |
+| **7** | ⬜ | [#8](https://github.com/contracamilo/oc-tr-backend/issues/8) (static), [#9](https://github.com/contracamilo/oc-tr-backend/issues/9) (tests), [#11](https://github.com/contracamilo/oc-tr-backend/issues/11) (README) | Static files + pytest + dashboard API + quickstart |
 | **#12** | ⬜ | [#12](https://github.com/contracamilo/oc-tr-backend/issues/12) | Paginación transversal + batch operations |
 | **Infra** | ⬜ | — | Migrar a PostgreSQL, async, BFF, repos, rate limiting, logging, errors |
 
@@ -306,7 +307,7 @@ Ver `.sdd/api-pagination.md` para el detalle. Estas fases se implementan sobre l
 | D | #4, #12 (checklist) | A | Checklist list con paginación |
 | E | #5, #12 (shopping) | A | Shopping list + `POST /batch-purchase` |
 | F | #6, #12 (budget) | A | Budget list con paginación |
-| G | #8, #9, #11 | A-F | Static files, pytest smoke, README |
+| G | #8, #9, #11 | A-F | Static files, pytest smoke, dashboard endpoint, README |
 
 ## 11. Para agents
 

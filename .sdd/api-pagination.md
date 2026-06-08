@@ -201,6 +201,7 @@ class RouletteResult(BaseModel):
 | `/api/budget` | POST | — | — | — |
 | `/api/budget/{id}` | PATCH/DELETE | — | — | — |
 | `/api/budget/summary` | GET | No (aggregate) | — | `month` |
+| `/api/dashboard` | GET | No (aggregate) | — | — |
 
 ---
 

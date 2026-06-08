@@ -180,14 +180,45 @@ Asignación aleatoria balanceada de tareas a usuarios.
 **Behavior**:
 1. Valida que todos los `task_ids` y `user_ids` existan
 2. Delega en `services/roulette.assign_tasks()` (pure function, round-robin balanceado)
-3. Aplica asignaciones en una transacción (setea `Task.assigned_to`)
+3. **Auto-apply**: Aplica asignaciones en una transacción (setea `Task.assigned_to`) — el frontend no necesita un segundo paso
 4. `seed` opcional — si se omite, usa random sin semilla
 
 **Errors**: 400 (IDs inválidos), 404 (task o user no existe)
 
 ---
 
-## 5. Checklist
+## 5. Dashboard
+
+### `GET /api/dashboard`
+
+KPIs agregados para la vista de inicio del frontend.
+
+**Response 200**:
+```json
+{
+  "tasks_pending": 12,
+  "tasks_overdue": 3,
+  "checklist_unchecked": 5,
+  "shopping_unpurchased": 18,
+  "budget_month": "2026-06",
+  "budget_balance": 650.00,
+  "budget_expense": 1850.00,
+  "budget_income": 2500.00
+}
+```
+
+**Comportamiento**:
+- `tasks_pending`: tareas con `status != 'done'`
+- `tasks_overdue`: tareas con `due_date < today` y `status != 'done'`
+- `checklist_unchecked`: items de la semana actual con `completed = false`
+- `shopping_unpurchased`: items con `purchased = false`
+- `budget_*`: datos del mes actual (o del último mes con movimientos)
+
+**Errors**: Ninguno (siempre devuelve KPIs, aunque sean 0)
+
+---
+
+## 6. Checklist
 
 ### `GET /api/checklist`
 
@@ -243,7 +274,7 @@ Asignación aleatoria balanceada de tareas a usuarios.
 
 ---
 
-## 6. Shopping
+## 7. Shopping
 
 ### `GET /api/shopping`
 
@@ -324,7 +355,7 @@ Marcar múltiples items como comprados en una sola transacción.
 
 ---
 
-## 7. Budget
+## 8. Budget
 
 ### `GET /api/budget`
 
@@ -399,7 +430,7 @@ Marcar múltiples items como comprados en una sola transacción.
 
 ---
 
-## 8. Status Codes Summary
+## 9. Status Codes Summary
 
 | Código | Significado | Uso |
 |--------|-------------|-----|
@@ -415,7 +446,7 @@ Marcar múltiples items como comprados en una sola transacción.
 
 ---
 
-## 9. Response Format Consistency
+## 10. Response Format Consistency
 
 Todas las respuestas siguen estas reglas:
 
